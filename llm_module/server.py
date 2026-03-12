@@ -1,11 +1,11 @@
 """
-Qwen3.5-35B-A3B 챗봇 서버
-실행 전제: vLLM 또는 SGLang으로 모델이 서빙 중이어야 합니다.
+Gemma-3-27B (llama.cpp) 챗봇 서버
+실행 전제: llama-server로 모델이 서빙 중이어야 합니다.
 
-  vllm serve Qwen/Qwen3.5-35B-A3B --port 8000 --tensor-parallel-size 4 \\
-      --max-model-len 32768 --reasoning-parser qwen3
+  GGUF=/path/to/gemma-3-27b-it-q4_0.gguf
+  llama-server -m $GGUF --alias gemma-3-27b -ngl 99 --split-mode row -c 8192 --port 8000
 
-실행: python3 server.py [--backend http://localhost:8000/v1]
+실행: python3 server.py [--backend http://localhost:8000/v1] [--model gemma-3-27b]
 접속: http://localhost:8083
 """
 
@@ -24,13 +24,13 @@ from openai import OpenAI
 parser = argparse.ArgumentParser()
 parser.add_argument("--backend", default="http://localhost:8000/v1",
                     help="OpenAI-compatible API base URL (vLLM / SGLang)")
-parser.add_argument("--model", default="Qwen/Qwen3.5-35B-A3B")
+parser.add_argument("--model", default="gemma-3-27b")
 parser.add_argument("--port", type=int, default=8083)
 args = parser.parse_args()
 
 client = OpenAI(base_url=args.backend, api_key="EMPTY")
 
-DEFAULT_SYSTEM = "당신은 친절하고 유능한 한국어 AI 어시스턴트입니다."
+DEFAULT_SYSTEM = "You are a helpful, friendly AI assistant. Please respond in the same language as the user."
 
 # ── 세션 관리 (메모리) ─────────────────────────────────────────────────────────
 _sessions: dict[str, list[dict]] = {}
