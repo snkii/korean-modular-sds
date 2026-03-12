@@ -217,9 +217,8 @@ HTML = """<!DOCTYPE html>
 </div>
 
 <script>
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-let playQueue = [];       // {buffer, startAt}
-let nextStartAt = 0;      // 다음 청크 시작 시각
+let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let nextStartAt = 0;
 let totalSents = 0;
 let doneSents  = 0;
 let evtSource  = null;
@@ -233,19 +232,25 @@ function setSpeaking(on) {
 }
 
 async function speak() {
-  const text  = document.getElementById("text").value.trim();
+  const text = document.getElementById("text").value.trim();
   if (!text) { setStatus("텍스트를 입력해주세요."); return; }
 
-  stopAll();
+  // 이전 재생 정리
+  if (evtSource) { evtSource.close(); evtSource = null; }
   stopped = false;
+
+  // 브라우저 autoplay 정책: 클릭 시점에 반드시 resume
+  await audioCtx.resume();
+  nextStartAt = audioCtx.currentTime + 0.05;
+
   setSpeaking(true);
   setProgress(0);
   setStatus("⏳ 합성 중...");
 
   // 1. POST → job_id
-  let res, job;
+  let job;
   try {
-    res = await fetch("/synthesize", {
+    const res = await fetch("/synthesize", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -256,23 +261,21 @@ async function speak() {
       }),
     });
     job = await res.json();
-  } catch(e) { setStatus("❌ 오류: " + e.message); setSpeaking(false); return; }
+  } catch(e) { setStatus("❌ 서버 연결 실패: " + e.message); setSpeaking(false); return; }
 
   if (job.error) { setStatus("❌ " + job.error); setSpeaking(false); return; }
 
   // 문장 수 추정 (진행률용)
   totalSents = (text.match(/[.!?。！？\n]/g) || []).length || 1;
   doneSents  = 0;
-  nextStartAt = audioCtx.currentTime + 0.05;
 
   // 2. SSE → 오디오 청크 수신 + 즉시 재생
   evtSource = new EventSource("/stream/" + job.job_id);
 
   evtSource.addEventListener("audio", async (e) => {
     if (stopped) return;
-    const wav = base64ToArrayBuffer(e.data);
     try {
-      const buf = await audioCtx.decodeAudioData(wav);
+      const buf = await audioCtx.decodeAudioData(base64ToArrayBuffer(e.data));
       scheduleBuffer(buf);
       doneSents++;
       setProgress(doneSents / totalSents);
@@ -283,7 +286,6 @@ async function speak() {
   evtSource.addEventListener("done", () => {
     evtSource.close(); evtSource = null;
     setProgress(1);
-    // 마지막 버퍼 재생 끝나면 UI 복원
     const remaining = nextStartAt - audioCtx.currentTime;
     setTimeout(() => { if (!stopped) { setSpeaking(false); setStatus("✅ 완료"); } },
                Math.max(0, remaining * 1000));
@@ -312,8 +314,9 @@ function scheduleBuffer(buf) {
 function stopAll() {
   stopped = true;
   if (evtSource) { evtSource.close(); evtSource = null; }
-  // 재생 중인 소리 즉시 정지: AudioContext suspend → resume
-  audioCtx.suspend().then(() => audioCtx.resume());
+  // AudioContext 재생성으로 즉시 정지
+  audioCtx.close();
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   nextStartAt = 0;
   setSpeaking(false);
   setProgress(0);
