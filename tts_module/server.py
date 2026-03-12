@@ -266,7 +266,7 @@ async function speak() {
   if (job.error) { setStatus("❌ " + job.error); setSpeaking(false); return; }
 
   // 문장 수 추정 (진행률용)
-  totalSents = (text.match(/[.!?。！？\n]/g) || []).length || 1;
+  totalSents = (text.match(/[.!?。！？\\n]/g) || []).length || 1;
   doneSents  = 0;
 
   // 2. SSE → 오디오 청크 수신 + 즉시 재생
