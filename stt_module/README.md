@@ -39,27 +39,25 @@ korean-modular-sds/          ← 이 레포 루트
 
 ## 환경 설정
 
+> **통합 실행 시**: `run.py`를 사용하면 `korean-modular-sds` 환경 하나로 STT·TTS·LLM 전부 실행됩니다.
+> 아래 설치 과정은 이미 완료된 상태이므로 별도 환경 생성 불필요합니다.
+
 ### 1. 시스템 패키지
 
 ```bash
 sudo apt-get install ffmpeg
 ```
 
-### 2. Conda 가상환경 생성
+### 2. Conda 가상환경 (`korean-modular-sds` 공용)
 
 ```bash
-conda create -n korean-stt python=3.10 -y
-conda activate korean-stt
+conda activate korean-modular-sds
 ```
 
-### 3. PyTorch 설치 (CUDA 버전에 맞게)
+### 3. PyTorch 설치 (CUDA 12.4 기준)
 
 ```bash
-# CUDA 12.1
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# CUDA 11.8
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
 
 ### 4. NeMo Toolkit 설치
@@ -68,10 +66,13 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install nemo_toolkit[asr]
 ```
 
-### 5. 나머지 패키지 설치
+### 5. Denoiser 런타임 의존성 설치
+
+> Denoiser 자체는 패키지로 설치하지 않고 `Korean-Streaming-ASR/src`를 sys.path로 사용합니다.
+> (denoiser 패키지 설치 시 hydra-core/omegaconf 버전 충돌 발생)
 
 ```bash
-pip install flask librosa numpy
+pip install julius sounddevice pystoi
 ```
 
 ---
@@ -109,8 +110,17 @@ pip install -e src/denoiser
 
 ## 실행
 
+### 통합 실행 (권장)
+
 ```bash
-conda activate korean-stt
+conda activate korean-modular-sds
+python run.py --port 8090   # 프로젝트 루트에서
+```
+
+### 단독 실행
+
+```bash
+conda activate korean-modular-sds
 cd /path/to/korean-modular-sds/stt_module
 python server.py
 ```
