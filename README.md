@@ -73,12 +73,15 @@ ln -s ../Korean-Streaming-ASR Korean-Streaming-ASR
 
 ### 체크포인트 파일 배치
 
-레포의 [Releases](https://github.com/SUNGBEOMCHOI/Korean-Streaming-ASR/releases) 페이지에서
-`denoiser.th`와 `Conformer-CTC-BPE.nemo`를 다운로드해 아래 위치에 배치합니다.
+아래 Google Drive 폴더에서 `denoiser.th`와 `Conformer-CTC-BPE.nemo`를 다운로드합니다.
+
+> [Google Drive 다운로드 폴더](https://drive.google.com/drive/folders/1Adv8kYXV1XGGoLY1XA36EI38kfk0r0WZ?usp=drive_link)
+
+다운로드한 파일을 아래 위치에 배치합니다.
 
 ```
 Korean-Streaming-ASR/checkpoint/
-├── denoiser.th              ← Facebook Denoiser 사전학습 가중치
+├── denoiser.th              ← Facebook Denoiser 가중치
 └── Conformer-CTC-BPE.nemo   ← NeMo 한국어 ASR 모델
 ```
 
