@@ -1,9 +1,14 @@
-# Korean Modular SDS
+# Korean / English Modular SDS
 
-실시간 한국어 음성 대화 시스템 (Spoken Dialogue System)
+실시간 음성 대화 시스템 (Spoken Dialogue System) — 한국어 / 영어 지원
 
 **STT → LLM → TTS** 파이프라인을 브라우저에서 완전히 동작시킵니다.
 마이크로 말하면 → AI가 생각하고 → 음성으로 대답합니다.
+
+| 언어 | 실행 파일 | STT 모델 |
+|------|-----------|----------|
+| 한국어 | `run.py` | NeMo Conformer-CTC-BPE (로컬 `.nemo`) |
+| English | `run_eng.py` | NeMo `stt_en_conformer_ctc_large` (자동 다운로드) |
 
 ---
 
@@ -168,26 +173,39 @@ find ~/.cache/huggingface -name "*.gguf" 2>/dev/null
 
 ## 실행
 
+### 한국어 버전
+
 ```bash
 conda activate korean-modular-sds
 cd /path/to/korean-modular-sds
-python run.py --port 8090
+python run.py --port 8080
 ```
+
+### 영어 버전
+
+```bash
+conda activate korean-modular-sds
+cd /path/to/korean-modular-sds
+python run_eng.py --port 8080
+```
+
+> **영어 버전 첫 실행 시**: NeMo가 `nvidia/stt_en_conformer_ctc_large` (~500 MB)를
+> NGC에서 자동 다운로드합니다. 이후에는 캐시에서 바로 로드됩니다.
 
 브라우저에서 접속:
 
 ```
-http://<서버IP>:8090
+http://<서버IP>:8080
 ```
 
 ### 시작 순서
 
-`run.py`가 세 모듈을 자동으로 순차 시작하고 준비될 때까지 대기합니다.
+`run.py` / `run_eng.py`가 세 모듈을 자동으로 병렬 시작하고 준비될 때까지 대기합니다.
 
 ```
-[1/3] STT 모듈 (Denoiser + Conformer-CTC-BPE)  — 약 30~60초
-[2/3] TTS 모듈 (Supertonic)                    — 약 10~20초
-[3/3] LLM 모듈 (llama-server + Qwen3.5-35B)   — 약 60~120초 (모델 로드)
+[1/3] STT 모듈  — 약 30~60초
+[2/3] TTS 모듈  — 약 10~20초
+[3/3] LLM 모듈  — 약 60~120초 (llama-server + 모델 로드)
 ```
 
 UI 상단 배너에서 STT / TTS / LLM 각 모듈의 준비 상태를 실시간으로 확인할 수 있습니다.
@@ -204,8 +222,8 @@ UI 상단 배너에서 STT / TTS / LLM 각 모듈의 준비 상태를 실시간�
 
 | 포트 | 모듈 | 설명 |
 |------|------|------|
-| 8090 | `run.py` | 통합 UI 서버 (외부 노출) |
-| 8081 | STT | Conformer-CTC-BPE 전사 서버 |
+| 8080 | `run.py` / `run_eng.py` | 통합 UI 서버 (외부 노출) |
+| 8081 | STT | 전사 서버 (`server.py` 또는 `server_en.py`) |
 | 8082 | TTS | Supertonic 합성 서버 |
 | 8083 | LLM | Flask 채팅 서버 |
 | 8180 | llama-server | 내부 OpenAI 호환 API (외부 비노출) |
@@ -264,4 +282,7 @@ ss -tlnp | grep -E "808[0-3]|8180"
 
 # 다른 포트로 실행
 python run.py --port 9090
+
+# run_eng.py 실행 전 STT 서버가 남아 있는 경우
+fuser -k 8081/tcp
 ```
