@@ -1,52 +1,76 @@
 """
-Gemma-3-27B (llama-cpp-python) 챗봇 서버
-GGUF 파일을 직접 로드해서 서버 내에서 추론합니다.
+Qwen3.5-35B-A3B 챗봇 서버
+llama-server(llama.cpp) subprocess + OpenAI API 방식
+논-띵킹 모드 기본
 
-실행: python3 server.py [--model /path/to/model.gguf] [--port 8083]
+실행: python3 server.py [--port 8083] [--ctx 8192]
 접속: http://localhost:8083
 """
 
 import argparse
+import atexit
 import json
 import logging
+import re
+import subprocess
 import threading
+import time
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 from flask import Flask, Response, jsonify, render_template_string, request
-from llama_cpp import Llama
+from openai import OpenAI
 
-GGUF_DEFAULT = (
-    "/home/sukim/.cache/huggingface/hub/"
-    "models--google--gemma-3-27b-it-qat-q4_0-gguf/snapshots/"
-    "17cf0f6ad611f1a57a1640daa57eb427d6e67ed6/gemma-3-27b-it-q4_0.gguf"
+LLAMA_SERVER_BIN = (
+    "/home/sukim/PROJECT_2026/LLAMA_CPP/upstream/build/bin/llama-server"
 )
+MODEL_PATH = (
+    "/home/sukim/.cache/huggingface/hub/"
+    "models--unsloth--Qwen3.5-35B-A3B-GGUF/blobs/"
+    "ee93ceffed5ce4df8b09bcbaf59a286d531025a1ebde9cf204c74e800c47d57e"
+)
+LLAMA_PORT = 8180
 
 # ── 인자 파싱 ──────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", default=GGUF_DEFAULT, help="GGUF 파일 경로")
-parser.add_argument("--ctx",   type=int, default=8192,  help="컨텍스트 길이")
-parser.add_argument("--port",  type=int, default=8083)
+parser.add_argument("--ctx",  type=int, default=8192, help="컨텍스트 길이")
+parser.add_argument("--port", type=int, default=8083)
 args = parser.parse_args()
 
-# ── 모델 로드 (8 GPU에 분산) ───────────────────────────────────────────────────
-print(f"모델 로딩 중: {args.model}")
-llm = Llama(
-    model_path=args.model,
-    n_gpu_layers=-1,          # 모든 레이어를 GPU로
-    tensor_split=[1]*8,       # 8 GPU 균등 분산
-    n_ctx=args.ctx,
-    n_batch=512,
-    verbose=False,
-)
-print("모델 로드 완료")
+# ── llama-server subprocess 시작 ───────────────────────────────────────────────
+cmd = [
+    LLAMA_SERVER_BIN,
+    "--model",         MODEL_PATH,
+    "--n-gpu-layers",  "-1",
+    "--tensor-split",  "1,1,1,1,1,1,1,1",
+    "--ctx-size",      str(args.ctx),
+    "--batch-size",    "512",
+    "--port",          str(LLAMA_PORT),
+    "--host",          "127.0.0.1",
+    "--jinja",                        # jinja chat template (enable_thinking 지원)
+    "--no-mmap",
+]
+_logfile = open("/tmp/llama-server.log", "w")
+print(f"llama-server 시작 중 (port {LLAMA_PORT})...")
+print(f"로그: /tmp/llama-server.log")
+_proc = subprocess.Popen(cmd, stdout=_logfile, stderr=_logfile)
+atexit.register(_proc.terminate)
 
-# inference는 한 번에 하나만 (llama_cpp 내부 상태 보호)
-_infer_lock = threading.Lock()
-
-DEFAULT_SYSTEM = "You are a helpful, friendly AI assistant. Please respond in the same language as the user."
+# 서버 준비 대기
+_client = OpenAI(base_url=f"http://127.0.0.1:{LLAMA_PORT}/v1", api_key="none")
+for _ in range(60):
+    try:
+        _client.models.list()
+        break
+    except Exception:
+        time.sleep(2)
+else:
+    raise RuntimeError("llama-server 시작 실패")
+print("llama-server 준비 완료")
 
 # ── 세션 관리 ──────────────────────────────────────────────────────────────────
+DEFAULT_SYSTEM = "You are a helpful, friendly AI assistant. Please respond in the same language as the user."
+
 _sessions: dict[str, list[dict]] = {}
 _sessions_lock = threading.Lock()
 
@@ -57,6 +81,10 @@ def get_history(session_id: str) -> list[dict]:
 def reset_history(session_id: str):
     with _sessions_lock:
         _sessions[session_id] = []
+
+def strip_thinking(text: str) -> str:
+    """<think>...</think> 블록 제거"""
+    return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).lstrip()
 
 # ── Flask ──────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -80,25 +108,51 @@ def chat():
 
     def generate():
         reply_buf = ""
+        in_think  = False
         try:
-            with _infer_lock:
-                stream = llm.create_chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=0.9,
-                    top_k=40,
-                    repeat_penalty=1.1,
-                    stream=True,
-                )
-                for chunk in stream:
-                    delta = chunk["choices"][0]["delta"]
-                    token = delta.get("content") or ""
-                    if token:
-                        reply_buf += token
-                        yield f"data: {json.dumps({'type': 'reply', 'text': token})}\n\n"
+            stream = _client.chat.completions.create(
+                model="local",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=0.8,
+                extra_body={
+                    "top_k": 20,
+                    "repeat_penalty": 1.0,
+                    "presence_penalty": 1.5,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+                stream=True,
+            )
+            for chunk in stream:
+                token = (chunk.choices[0].delta.content or "") if chunk.choices else ""
+                if not token:
+                    continue
 
-            history.append({"role": "assistant", "content": reply_buf.strip()})
+                # <think> 태그 실시간 필터링 (혹시 모를 누락 대비)
+                reply_buf += token
+                if "<think>" in reply_buf:
+                    in_think = True
+                if in_think:
+                    if "</think>" in reply_buf:
+                        reply_buf = re.sub(r"<think>.*?</think>\s*", "", reply_buf, flags=re.DOTALL)
+                        in_think = False
+                    continue
+
+                yield f"data: {json.dumps({'type': 'reply', 'text': token})}\n\n"
+
+            # 스트림 종료 후 남은 버퍼 처리
+            if reply_buf and not in_think:
+                pass  # 이미 토큰 단위로 전송됨
+            elif in_think:
+                # 닫히지 않은 think 블록 제거 후 전송
+                clean = re.sub(r"<think>.*", "", reply_buf, flags=re.DOTALL).strip()
+                if clean:
+                    yield f"data: {json.dumps({'type': 'reply', 'text': clean})}\n\n"
+
+            # 히스토리에는 thinking 제거된 텍스트 저장
+            final = strip_thinking(reply_buf).strip()
+            history.append({"role": "assistant", "content": final})
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
@@ -120,7 +174,7 @@ HTML = """<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <title>Gemma-3-27B 챗봇</title>
+  <title>Qwen3.5-35B-A3B 챗봇</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5;
@@ -185,7 +239,7 @@ HTML = """<!DOCTYPE html>
 </div>
 
 <div class="chat-wrap">
-  <div class="chat-header">Gemma-3-27B</div>
+  <div class="chat-header">Qwen3.5-35B-A3B (non-thinking)</div>
   <div class="messages" id="messages"></div>
   <div class="input-area">
     <textarea id="input" rows="1" placeholder="메시지를 입력하세요... (Shift+Enter: 줄바꿈)"
