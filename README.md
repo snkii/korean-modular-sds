@@ -127,6 +127,9 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 # STT — NeMo ASR
 pip install nemo_toolkit[asr]
 
+# STT — VAD
+pip install silero-vad
+
 # STT — Denoiser 런타임 의존성
 # (denoiser 패키지 자체는 설치하지 않음 — hydra-core/omegaconf 버전 충돌)
 pip install julius sounddevice pystoi librosa

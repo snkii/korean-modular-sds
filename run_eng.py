@@ -38,6 +38,7 @@ def _start_module(conda_env: str, subdir: str, script: str = "server.py") -> sub
     proc = subprocess.Popen(
         ["conda", "run", "--no-capture-output", "-n", conda_env, "python", script],
         cwd=os.path.join(ROOT_DIR, subdir),
+        preexec_fn=os.setsid,  # 새 프로세스 그룹 생성 → 자식까지 한번에 종료 가능
     )
     _procs.append(proc)
     return proc
@@ -88,14 +89,17 @@ def start_modules() -> None:
 def cleanup() -> None:
     for p in _procs:
         try:
-            p.terminate()
+            os.killpg(os.getpgid(p.pid), signal.SIGTERM)
         except Exception:
             pass
     for p in _procs:
         try:
             p.wait(timeout=5)
         except Exception:
-            pass
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except Exception:
+                pass
 
 
 # ── Proxy routes ───────────────────────────────────────────────────────────────
@@ -837,7 +841,9 @@ async function toggleMic() {
   } else {
     if (!micStream) {
       try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
       } catch (e) {
         setStatus('', 'Mic error: ' + e.message);
         return;

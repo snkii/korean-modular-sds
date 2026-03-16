@@ -31,6 +31,11 @@ DEFAULT_VOICE = "M1"
 DEFAULT_LANG  = "ko"
 DEFAULT_SPEED = 1.05
 
+print("TTS 워밍업 중...")
+_warmup_style = tts.get_voice_style(voice_name=DEFAULT_VOICE)
+tts.synthesize("안녕.", voice_style=_warmup_style, lang=DEFAULT_LANG, speed=DEFAULT_SPEED)
+print("TTS 워밍업 완료")
+
 # ── 문장 분리 ──────────────────────────────────────────────────────────────────
 _SENT_RE = re.compile(r'(?<=[.!?。！？\n])\s*')
 

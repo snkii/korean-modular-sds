@@ -30,14 +30,16 @@ sys.path.insert(0, DENOISER_DIR)
 
 from denoiser import pretrained as denoiser_pretrained
 import nemo.collections.asr as nemo_asr
+from silero_vad import load_silero_vad
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
 DEVICE       = "cuda" if torch.cuda.is_available() else "cpu"
 DENOISER_PTH = os.path.join(CKPT_DIR, "denoiser.th")
 ASR_NEMO     = os.path.join(CKPT_DIR, "Conformer-CTC-BPE.nemo")
 
-SILENCE_RMS_THRESH = 0.005
-SILENCE_CHUNKS_END = 2      # 연속 묵음 청크 수 → 발화 종료
+VAD_SPEECH_THRESH  = 0.3    # Silero VAD 발화 판정 임계값 (0~1, 낮을수록 민감)
+RMS_SPEECH_THRESH  = 0.008  # RMS fallback: 이 이상이면 무조건 speech로 유지
+SILENCE_CHUNKS_END = 4      # 연속 묵음 청크 수 → 발화 종료 (4 = 800ms)
 DENOISE_DRY        = 0.05
 
 print(f"사용 장치: {DEVICE}")
@@ -60,6 +62,29 @@ print("ASR 모델 로드 완료")
 SAMPLE_RATE = asr_model.preprocessor._cfg["sample_rate"]
 BLANK_ID    = len(asr_model.decoder.vocabulary)
 
+print("Silero VAD 로딩 중...")
+vad_model = load_silero_vad()
+vad_model.eval()
+print("Silero VAD 로드 완료")
+
+_VAD_WINDOW = 512  # 16kHz 기준 32ms
+_vad_lock   = threading.Lock()  # Silero VAD는 스레드 비안전 → 직렬화 필요
+
+def is_speech_vad(audio_np: np.ndarray) -> bool:
+    """Silero VAD로 발화 여부 판정 (512샘플 윈도우 슬라이딩)."""
+    # librosa.load가 이미 float32 [-1,1]로 반환 → 추가 정규화 불필요
+    tensor = torch.from_numpy(audio_np.copy()).float()
+    with _vad_lock:
+        vad_model.reset_states()  # 요청 간 LSTM 상태 오염 방지
+        for start in range(0, len(tensor), _VAD_WINDOW):
+            chunk = tensor[start : start + _VAD_WINDOW]
+            if len(chunk) < _VAD_WINDOW:
+                chunk = torch.nn.functional.pad(chunk, (0, _VAD_WINDOW - len(chunk)))
+            with torch.no_grad():
+                if vad_model(chunk, SAMPLE_RATE).item() > VAD_SPEECH_THRESH:
+                    return True
+    return False
+
 
 @torch.no_grad()
 def transcribe_buffer(buf: np.ndarray) -> str:
@@ -78,12 +103,22 @@ def transcribe_buffer(buf: np.ndarray) -> str:
     return asr_model.tokenizer.ids_to_text(out)
 
 
+# ── 워밍업 ────────────────────────────────────────────────────────────────────
+print("워밍업 중 (VAD + ASR)...")
+_dummy_audio = np.zeros(SAMPLE_RATE, dtype=np.float32)  # 1초 묵음
+is_speech_vad(_dummy_audio)
+transcribe_buffer(_dummy_audio)
+print("워밍업 완료")
+
+
 # ── 상태 ─────────────────────────────────────────────────────────────────────
 _lock          = threading.Lock()
 _audio_chunks  : list[np.ndarray] = []
 _in_speech     = False
 _silence_count = 0
 _last_text     = ""
+_pre_buf       : list[np.ndarray] = []  # 발화 시작 직전 청크 (onset 보존용)
+PRE_BUF_SIZE   = 1                      # 유지할 pre-speech 청크 수
 
 # ── Flask + SSE ───────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -156,7 +191,9 @@ HTML = """<!DOCTYPE html>
 
   async function startRecording() {
     if (!micStream) {
-      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      try { micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      }); }
       catch(e) { setStatus("❌ 마이크 오류: " + e.message); return; }
     }
     isRecording = true;
@@ -291,22 +328,30 @@ def transcribe():
     if len(audio_np) < 800:
         return jsonify(message="too short"), 200
 
-    rms = float(np.sqrt(np.mean(audio_np ** 2)))
-    is_speech = rms > SILENCE_RMS_THRESH
+    rms       = float(np.sqrt(np.mean(audio_np ** 2)))
+    is_speech = is_speech_vad(audio_np) or (rms > RMS_SPEECH_THRESH)
 
     with _lock:
         if is_speech:
             if not _in_speech:
-                # 새 발화 시작
-                _audio_chunks = []
+                # 새 발화 시작: pre-buffer로 onset 보존
+                _audio_chunks = list(_pre_buf) + [audio_np]
                 _last_text = ""
                 _in_speech = True
+            else:
+                _audio_chunks.append(audio_np)
             _silence_count = 0
-            _audio_chunks.append(audio_np)
+            _pre_buf.clear()
             full_audio = np.concatenate(_audio_chunks)
         else:
             if not _in_speech:
+                # 발화 전 pre-buffer 유지
+                _pre_buf.append(audio_np)
+                if len(_pre_buf) > PRE_BUF_SIZE:
+                    _pre_buf.pop(0)
                 return jsonify(message="silence"), 200
+            # 발화 중 silence: trailing 오디오도 버퍼에 포함
+            _audio_chunks.append(audio_np)
             _silence_count += 1
             if _silence_count < SILENCE_CHUNKS_END:
                 return jsonify(message="buffering"), 200

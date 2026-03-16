@@ -68,6 +68,18 @@ else:
     raise RuntimeError("llama-server 시작 실패")
 print("llama-server 준비 완료")
 
+print("LLM 워밍업 중...")
+try:
+    _client.chat.completions.create(
+        model="local",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=1,
+        stream=False,
+    )
+except Exception:
+    pass
+print("LLM 워밍업 완료")
+
 # ── 세션 관리 ──────────────────────────────────────────────────────────────────
 DEFAULT_SYSTEM = "You are a helpful, friendly AI assistant. Please respond in the same language as the user."
 
