@@ -59,31 +59,47 @@ def _wait_ready(url: str, label: str, key: str, timeout: int = 180) -> None:
     print(f"  ✗ {label} 시작 실패 ({timeout}s 초과)", file=sys.stderr)
 
 
+def _module_up(url: str) -> bool:
+    try:
+        return requests.get(url, timeout=2).status_code < 500
+    except Exception:
+        return False
+
+
 def start_modules() -> None:
     print("=" * 52)
-    print("  Korean Modular SDS 시작 중...")
+    print("  Korean Full-Duplex Audio-LM (HIL) 시작 중...")
     print("=" * 52)
-    print("\n[1/3] STT 모듈 (conda: korean-modular-sds) ...")
-    _start_module("korean-modular-sds", "stt_module")
-    print("[2/3] TTS 모듈 (conda: korean-modular-sds) ...")
-    _start_module("korean-modular-sds", "tts_module")
-    print("[3/3] LLM 모듈 (conda: korean-modular-sds) ...")
-    _start_module("korean-modular-sds", "llm_module")
-
-    print("\n모듈 준비 대기 중 (병렬)...")
-    threads = [
-        threading.Thread(target=_wait_ready, args=(STT_URL, "STT", "stt"), daemon=True),
-        threading.Thread(target=_wait_ready, args=(TTS_URL, "TTS", "tts"), daemon=True),
-        threading.Thread(target=_wait_ready, args=(LLM_URL, "LLM", "llm"), daemon=True),
+    specs = [
+        ("STT", "stt_module", STT_URL, "stt"),
+        ("TTS", "tts_module", TTS_URL, "tts"),
+        ("LLM", "llm_module", LLM_URL, "llm"),
     ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    pending = []
+    for label, subdir, url, key in specs:
+        if _module_up(url):
+            # 이미 다른 인스턴스가 이 포트를 서비스 중 → 재생성하지 않는다
+            # (중복 spawn·llama-server 재기동으로 인한 포트/GPU 충돌 방지)
+            print(f"  ✓ {label} 이미 실행 중 – 건너뜀 ({url})")
+            _ready[key] = True
+        else:
+            print(f"  · {label} 모듈 기동 (conda: korean-modular-sds) ...")
+            _start_module("korean-modular-sds", subdir)
+            pending.append((label, url, key))
+
+    if pending:
+        print("\n모듈 준비 대기 중 (병렬)...")
+        threads = [
+            threading.Thread(target=_wait_ready, args=(url, label, key), daemon=True)
+            for label, url, key in pending
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     print("\n" + "=" * 52)
     print("  모든 모듈 준비 완료!")
-    print("  UI: http://0.0.0.0:8080")
     print("=" * 52)
 
 
@@ -223,220 +239,208 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Korean Modular SDS</title>
+<title>한국형 전이중 음성 대화 에이전트 · HIL</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  background: #f0f2f5;
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
+:root {
+  --bg-0:#05060c; --bg-1:#0a0d1a; --panel:rgba(255,255,255,.045);
+  --panel-brd:rgba(255,255,255,.09); --ink:#eef1fb; --ink-soft:#aab3d0;
+  --ink-mute:#6b7495; --field:rgba(255,255,255,.05); --field-brd:rgba(255,255,255,.12);
+  --accent:#7c5cff; --accent-2:#22d3ee;
+  /* 상태색 (body[data-state] 로 전환) */
+  --state:#7c5cff; --state-soft:rgba(124,92,255,.55);
 }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; }
+body {
+  font-family:'Pretendard','Apple SD Gothic Neo','Segoe UI',system-ui,sans-serif;
+  color:var(--ink);
+  background:var(--bg-0);
+  display:flex; height:100vh; overflow:hidden;
+  position:relative;
+}
+/* 상태별 강조색 */
+body[data-state="idle"]      { --state:#7c5cff; --state-soft:rgba(124,92,255,.55); }
+body[data-state="listening"] { --state:#34e5b0; --state-soft:rgba(52,229,176,.55); }
+body[data-state="thinking"]  { --state:#4cc4ff; --state-soft:rgba(76,196,255,.55); }
+body[data-state="speaking"]  { --state:#ffb454; --state-soft:rgba(255,180,84,.55); }
+
+/* ── 배경 오로라 ── */
+.aurora { position:fixed; inset:-20% -10% -10% -10%; z-index:0; pointer-events:none; overflow:hidden;
+          background:radial-gradient(60% 50% at 50% 0%, #12173080 0%, transparent 70%); }
+.aurora::before, .aurora::after {
+  content:""; position:absolute; width:60vw; height:60vw; border-radius:50%;
+  filter:blur(90px); opacity:.5; mix-blend-mode:screen;
+}
+.aurora::before { background:radial-gradient(circle,#5b3cff 0%,transparent 60%); top:-18vw; left:-8vw;
+                  animation:float1 22s ease-in-out infinite; }
+.aurora::after  { background:radial-gradient(circle,#12a7c9 0%,transparent 60%); bottom:-22vw; right:-6vw;
+                  animation:float2 26s ease-in-out infinite; }
+@keyframes float1 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(6vw,4vw) scale(1.12)} }
+@keyframes float2 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-5vw,-3vw) scale(1.08)} }
+.grain { position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.5;
+  background:
+    radial-gradient(1px 1px at 20% 30%, #ffffff14, transparent),
+    radial-gradient(1px 1px at 70% 60%, #ffffff10, transparent),
+    radial-gradient(1px 1px at 40% 80%, #ffffff0d, transparent); }
 
 /* ── 사이드바 ── */
 .sidebar {
-  width: 230px;
-  background: #1e1e2e;
-  color: #cdd6f4;
-  display: flex;
-  flex-direction: column;
-  padding: 18px 14px;
-  gap: 14px;
-  flex-shrink: 0;
-  overflow-y: auto;
+  position:relative; z-index:2;
+  width:264px; flex-shrink:0;
+  display:flex; flex-direction:column; gap:16px;
+  padding:20px 16px;
+  background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+  border-right:1px solid var(--panel-brd);
+  backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+  overflow-y:auto;
 }
-.sidebar h3 {
-  font-size: 11px;
-  color: #6c7086;
-  text-transform: uppercase;
-  letter-spacing: .1em;
-  margin-bottom: 2px;
+.brand-mini { display:flex; align-items:center; gap:11px; padding:2px 4px 10px;
+              border-bottom:1px solid var(--panel-brd); }
+.brand-logo { width:38px; height:38px; border-radius:11px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px; letter-spacing:.02em;
+  color:#fff; background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  box-shadow:0 6px 18px rgba(124,92,255,.45); }
+.brand-mini .b-lab { font-size:12.5px; font-weight:700; color:var(--ink); line-height:1.25; }
+.brand-mini .b-sub { font-size:10.5px; color:var(--ink-mute); margin-top:2px; }
+
+.sidebar h3 { font-size:10.5px; color:var(--ink-mute); text-transform:uppercase;
+              letter-spacing:.14em; margin-bottom:-4px; }
+.field { display:flex; flex-direction:column; gap:6px; }
+.sidebar label { font-size:12px; color:var(--ink-soft); display:flex; justify-content:space-between; align-items:center; }
+.sidebar select, .sidebar textarea {
+  width:100%; background:var(--field); border:1px solid var(--field-brd);
+  color:var(--ink); border-radius:10px; padding:9px 10px; font-size:12.5px; font-family:inherit;
+  transition:border-color .2s, box-shadow .2s;
 }
-.sidebar label {
-  font-size: 12px;
-  color: #a6adc8;
-  display: block;
-  margin-bottom: 4px;
-}
-.sidebar select,
-.sidebar textarea {
-  width: 100%;
-  background: #313244;
-  border: 1px solid #45475a;
-  color: #cdd6f4;
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-size: 12px;
-  font-family: inherit;
-}
-.sidebar textarea { resize: vertical; min-height: 72px; }
-.range-row { display: flex; align-items: center; gap: 8px; }
-.range-row input[type=range] { flex: 1; }
-.val-lbl { font-size: 12px; color: #a6adc8; min-width: 34px; text-align: right; }
+.sidebar select:focus, .sidebar textarea:focus {
+  outline:none; border-color:var(--state-soft); box-shadow:0 0 0 3px var(--state-soft); }
+.sidebar textarea { resize:vertical; min-height:96px; line-height:1.55; }
+.range-row { display:flex; align-items:center; }
+input[type=range]{ -webkit-appearance:none; appearance:none; width:100%; height:5px; border-radius:99px;
+  background:linear-gradient(90deg,var(--accent),var(--accent-2)); }
+input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:16px; height:16px; border-radius:50%;
+  background:#fff; border:3px solid var(--state); box-shadow:0 2px 8px rgba(0,0,0,.5); cursor:pointer; }
+.val-lbl { font-size:11px; color:var(--ink); background:var(--field); border:1px solid var(--field-brd);
+  padding:1px 8px; border-radius:99px; min-width:44px; text-align:center; }
 .new-chat-btn {
-  background: #89b4fa;
-  color: #1e1e2e;
-  border: none;
-  border-radius: 8px;
-  padding: 9px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  margin-top: auto;
-}
-.new-chat-btn:hover { opacity: .85; }
+  margin-top:auto; border:none; cursor:pointer; border-radius:12px; padding:12px;
+  font-size:13px; font-weight:700; color:#0a0d1a; letter-spacing:.01em;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  box-shadow:0 8px 22px rgba(124,92,255,.35); transition:transform .12s, filter .2s; }
+.new-chat-btn:hover { filter:brightness(1.08); transform:translateY(-1px); }
 
 /* ── 채팅 영역 ── */
-.chat-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.chat-wrap { position:relative; z-index:2; flex:1; display:flex; flex-direction:column; overflow:hidden; }
 
 .chat-header {
-  padding: 13px 18px;
-  background: white;
-  border-bottom: 1px solid #e0e0e0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  padding:16px 24px; display:flex; align-items:center; gap:16px;
+  border-bottom:1px solid var(--panel-brd);
+  background:linear-gradient(180deg, rgba(255,255,255,.04), transparent);
+  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
 }
-.header-title { font-size: 15px; font-weight: 600; color: #333; }
-.status-dot {
-  width: 9px; height: 9px;
-  border-radius: 50%;
-  background: #ccc;
-  flex-shrink: 0;
-  transition: background .3s;
-}
-.status-dot.listening { background: #a6e3a1; animation: pulse 1.2s infinite; }
-.status-dot.thinking  { background: #89b4fa; animation: pulse .8s  infinite; }
-.status-dot.speaking  { background: #fab387; animation: pulse .6s  infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
-.status-txt { font-size: 12px; color: #888; }
+.title-block { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.title-ko { font-size:16.5px; font-weight:750; letter-spacing:-.01em;
+  background:linear-gradient(90deg,#fff, #cbd3ff); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.title-en { font-size:11px; color:var(--ink-mute); letter-spacing:.06em; text-transform:uppercase; }
+.title-en b { color:var(--ink-soft); font-weight:600; }
+.header-status { margin-left:auto; display:flex; align-items:center; gap:9px;
+  padding:7px 14px; border-radius:99px; background:var(--field); border:1px solid var(--field-brd); }
+.status-dot { width:9px; height:9px; border-radius:50%; background:var(--ink-mute); flex-shrink:0;
+  box-shadow:0 0 0 0 transparent; transition:background .3s, box-shadow .3s; }
+.status-dot.listening { background:#34e5b0; box-shadow:0 0 10px 2px rgba(52,229,176,.7); animation:pulse 1.2s infinite; }
+.status-dot.thinking  { background:#4cc4ff; box-shadow:0 0 10px 2px rgba(76,196,255,.7); animation:pulse .8s infinite; }
+.status-dot.speaking  { background:#ffb454; box-shadow:0 0 10px 2px rgba(255,180,84,.7); animation:pulse .6s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.status-txt { font-size:12px; color:var(--ink-soft); white-space:nowrap; }
 
 /* ── 메시지 ── */
-.messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
+.messages { flex:1; overflow-y:auto; padding:26px 24px 8px;
+  display:flex; flex-direction:column; gap:16px; scroll-behavior:smooth; }
+.messages::-webkit-scrollbar { width:8px; }
+.messages::-webkit-scrollbar-thumb { background:rgba(255,255,255,.12); border-radius:99px; }
 
-.msg { display: flex; flex-direction: column; max-width: 80%; }
-.msg.user      { align-self: flex-end;   align-items: flex-end; }
-.msg.assistant { align-self: flex-start; align-items: flex-start; }
-
-.role-label {
-  font-size: 11px;
-  color: #aaa;
-  margin-bottom: 3px;
-  padding: 0 4px;
-}
-
-.bubble {
-  padding: 10px 14px;
-  border-radius: 18px;
-  font-size: 15px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.msg.user .bubble {
-  background: #89b4fa;
-  color: #1e1e2e;
-  border-bottom-right-radius: 4px;
-}
-.msg.assistant .bubble {
-  background: white;
-  color: #333;
-  border: 1px solid #e4e4e4;
-  border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.05);
-}
-.cursor {
-  display: inline-block;
-  width: 2px; height: 1em;
-  background: #89b4fa;
-  animation: blink .7s infinite;
-  vertical-align: text-bottom;
-  margin-left: 1px;
-}
+.msg { display:flex; flex-direction:column; max-width:78%; animation:rise .28s ease both; }
+.msg.user { align-self:flex-end; align-items:flex-end; }
+.msg.assistant { align-self:flex-start; align-items:flex-start; }
+@keyframes rise { from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
+.role-label { font-size:10.5px; color:var(--ink-mute); margin-bottom:5px; padding:0 6px;
+  letter-spacing:.08em; text-transform:uppercase; }
+.bubble { padding:12px 16px; border-radius:18px; font-size:15px; line-height:1.7;
+  white-space:pre-wrap; word-break:break-word; }
+.msg.user .bubble { color:#fff;
+  background:linear-gradient(135deg,var(--accent),#5b3cff);
+  border-bottom-right-radius:6px; box-shadow:0 8px 24px rgba(91,60,255,.32); }
+.msg.assistant .bubble { color:var(--ink);
+  background:rgba(255,255,255,.055); border:1px solid var(--panel-brd);
+  border-bottom-left-radius:6px; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); }
+.cursor { display:inline-block; width:2px; height:1em; background:var(--state);
+  animation:blink .7s infinite; vertical-align:text-bottom; margin-left:2px; border-radius:2px; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 
 /* ── 로딩 배너 ── */
-.loading-banner {
-  display: none;
-  background: #fab387;
-  color: #1e1e2e;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 18px;
-  text-align: center;
-  gap: 8px;
-  align-items: center;
-  justify-content: center;
-}
-.loading-banner.show { display: flex; }
-.module-pills { display: flex; gap: 6px; margin-left: 8px; }
-.pill {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(0,0,0,.15);
-  color: #1e1e2e;
-}
-.pill.ready { background: #a6e3a1; }
+.loading-banner { display:none; align-items:center; justify-content:center; gap:10px;
+  font-size:12.5px; font-weight:600; color:var(--ink-soft); padding:9px 18px;
+  background:rgba(255,180,84,.08); border-bottom:1px solid var(--panel-brd); }
+.loading-banner.show { display:flex; }
+.module-pills { display:flex; gap:7px; margin-left:6px; }
+.pill { font-size:10.5px; font-weight:700; letter-spacing:.05em; padding:3px 11px; border-radius:99px;
+  color:var(--ink-mute); background:var(--field); border:1px solid var(--field-brd); transition:all .3s; }
+.pill.ready { color:#0a0d1a; background:linear-gradient(135deg,#34e5b0,#22d3ee); border-color:transparent; }
 
-/* ── 하단 바 ── */
-.bottom-bar {
-  padding: 10px 18px 14px;
-  background: white;
-  border-top: 1px solid #e0e0e0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.partial-area {
-  width: 100%;
-  min-height: 20px;
-  font-size: 13px;
-  color: #aaa;
-  font-style: italic;
-  text-align: center;
-}
-.mic-btn {
-  width: 62px; height: 62px;
-  border-radius: 50%;
-  border: none;
-  background: #89b4fa;
-  color: #1e1e2e;
-  font-size: 26px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all .2s;
-  box-shadow: 0 3px 14px rgba(137,180,250,.4);
-  user-select: none;
-}
-.mic-btn.recording {
-  background: #f38ba8;
-  box-shadow: 0 3px 18px rgba(243,139,168,.5);
-  animation: micPulse 1s infinite;
-}
-@keyframes micPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.07)} }
-.mic-btn:hover { opacity: .88; }
+/* ── 하단 스테이지 (오브) ── */
+.stage { padding:14px 18px 30px; display:flex; flex-direction:column; align-items:center; gap:14px;
+  background:linear-gradient(0deg, rgba(255,255,255,.035), transparent); }
+.partial-area { width:100%; max-width:640px; min-height:22px; text-align:center;
+  font-size:13.5px; color:var(--ink-soft); font-style:normal; }
+.partial-area:empty::before { content:""; }
+
+.orb-wrap { position:relative; width:132px; height:132px; display:flex; align-items:center; justify-content:center; }
+/* 회전 링 */
+.orb-wrap::before { content:""; position:absolute; inset:-6px; border-radius:50%;
+  background:conic-gradient(from 0deg, var(--state), transparent 30%, var(--state) 60%, transparent 92%);
+  opacity:.55; filter:blur(2px); animation:spin 6s linear infinite; }
+@keyframes spin { to{ transform:rotate(360deg); } }
+/* 대기 시 은은한 확장 */
+.orb-wrap::after { content:""; position:absolute; width:96px; height:96px; border-radius:50%;
+  border:1px solid var(--state-soft); animation:breathe 3.4s ease-in-out infinite; }
+@keyframes breathe { 0%,100%{ transform:scale(1); opacity:.4 } 50%{ transform:scale(1.28); opacity:0 } }
+
+.mic-btn { position:relative; z-index:1; width:96px; height:96px; border-radius:50%; border:none;
+  cursor:pointer; user-select:none; font-size:34px; color:#fff;
+  display:flex; align-items:center; justify-content:center;
+  background:radial-gradient(120% 120% at 30% 25%, #ffffff30, transparent 40%),
+             radial-gradient(circle at 50% 50%, var(--state), #1a1030 90%);
+  box-shadow:0 0 0 1px rgba(255,255,255,.12) inset, 0 14px 40px var(--state-soft);
+  transition:transform .16s, box-shadow .3s; }
+.mic-btn:hover { transform:scale(1.05); }
+.mic-btn.recording { animation:micPulse 1.1s ease-in-out infinite; }
+@keyframes micPulse { 0%,100%{ box-shadow:0 0 0 1px rgba(255,255,255,.15) inset, 0 0 0 0 var(--state-soft); }
+  50%{ box-shadow:0 0 0 1px rgba(255,255,255,.15) inset, 0 0 0 18px transparent; } }
+/* 녹음 중 링 강조 */
+body[data-rec="1"] .orb-wrap::before { animation-duration:2.4s; opacity:.85; }
+.hint { font-size:11.5px; color:var(--ink-mute); letter-spacing:.02em; }
+
+/* 반응형 */
+@media (max-width:760px){ .sidebar{ display:none; } .title-en{ display:none; } }
 </style>
 </head>
-<body>
+<body data-state="idle" data-rec="0">
+<div class="aurora"></div>
+<div class="grain"></div>
 
 <!-- 사이드바 -->
 <div class="sidebar">
-  <h3>설정</h3>
+  <div class="brand-mini">
+    <div class="brand-logo">HIL</div>
+    <div>
+      <div class="b-lab">서울대학교<br>휴먼인터페이스연구실</div>
+      <div class="b-sub">Human Interface Laboratory</div>
+    </div>
+  </div>
 
-  <div>
+  <h3>대화 설정</h3>
+
+  <div class="field">
     <label>AI 목소리</label>
     <select id="ttsVoice">
       <optgroup label="남성">
@@ -456,51 +460,59 @@ body {
     </select>
   </div>
 
-  <div>
-    <label>TTS 속도 <span class="val-lbl" id="speedLbl">1.05</span></label>
+  <div class="field">
+    <label>말하기 속도 <span class="val-lbl" id="speedLbl">1.05</span></label>
     <div class="range-row">
       <input type="range" id="ttsSpeed" min="0.7" max="1.5" step="0.05" value="1.05"
              oninput="document.getElementById('speedLbl').textContent=parseFloat(this.value).toFixed(2)">
     </div>
   </div>
 
-  <div>
-    <label>Temperature <span class="val-lbl" id="tempLbl">0.70</span></label>
+  <div class="field">
+    <label>답변 다양성 <span class="val-lbl" id="tempLbl">0.70</span></label>
     <div class="range-row">
       <input type="range" id="temperature" min="0" max="2" step="0.05" value="0.7"
              oninput="document.getElementById('tempLbl').textContent=parseFloat(this.value).toFixed(2)">
     </div>
   </div>
 
-  <div>
+  <div class="field">
     <label>시스템 프롬프트</label>
-    <textarea id="systemPrompt">You are a helpful, friendly AI assistant. Always respond in Korean with a single short sentence.</textarea>
+    <textarea id="systemPrompt">당신은 서울대학교 휴먼인터페이스연구실(HIL)이 개발한 한국형 전이중 음성 대화 에이전트입니다. 사용자와 실시간으로 자연스럽게 대화하며, 항상 정중하고 친근한 한국어 구어체로 한두 문장 이내로 짧고 명확하게 대답합니다. 소리 내어 읽어 주는 음성 답변이므로 괄호나 특수문자, 이모지, 줄바꿈, 목록 기호는 절대 쓰지 않습니다. 모르는 내용은 아는 척하지 않고 솔직하게 말합니다.</textarea>
   </div>
 
-  <button class="new-chat-btn" onclick="newChat()">＋ 새 대화</button>
+  <button class="new-chat-btn" onclick="newChat()">＋ 새 대화 시작</button>
 </div>
 
 <!-- 채팅 -->
 <div class="chat-wrap">
   <div class="chat-header">
-    <span class="status-dot" id="statusDot"></span>
-    <span class="header-title">Korean Modular SDS</span>
-    <span class="status-txt" id="statusTxt">마이크 버튼을 눌러 시작하세요</span>
+    <div class="title-block">
+      <div class="title-ko">한국형 전이중 음성 대화 에이전트</div>
+      <div class="title-en">Korean <b>Full-Duplex</b> Audio-Language Model · <b>HIL</b> @ Seoul National University</div>
+    </div>
+    <div class="header-status">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-txt" id="statusTxt">마이크 버튼을 눌러 시작하세요</span>
+    </div>
   </div>
 
   <div class="loading-banner" id="loadingBanner">
-    ⏳ 모듈 로딩 중...
+    ⏳ 음성 엔진 준비 중
     <div class="module-pills">
-      <span class="pill" id="pillStt">STT</span>
-      <span class="pill" id="pillTts">TTS</span>
-      <span class="pill" id="pillLlm">LLM</span>
+      <span class="pill" id="pillStt">음성인식</span>
+      <span class="pill" id="pillTts">음성합성</span>
+      <span class="pill" id="pillLlm">언어모델</span>
     </div>
   </div>
   <div class="messages" id="messages"></div>
 
-  <div class="bottom-bar">
+  <div class="stage">
     <div class="partial-area" id="partialArea"></div>
-    <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="마이크 켜기/끄기">🎤</button>
+    <div class="orb-wrap">
+      <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="마이크 켜기/끄기">🎤</button>
+    </div>
+    <div class="hint">버튼을 누르고 편하게 말씀하세요 · 언제든 끼어들 수 있어요</div>
   </div>
 </div>
 
@@ -519,13 +531,14 @@ let sttEs         = null;
 let llmController = null;   // AbortController
 
 // TTS
-let audioCtx     = null;
-let ttsNextStart = 0;       // Web Audio 스케줄 타임
-let ttsQueue     = [];      // 합성 대기 중인 문장 목록
-let isTTSBusy    = false;   // drainTTS 실행 중 여부
-let ttsJobSeq    = 0;       // 인터럽트 시퀀스 번호
-let ttsEsCurrent = null;    // 현재 열린 TTS EventSource
-let ttsResolve   = null;    // 현재 대기 중인 Promise resolve
+let audioCtx      = null;
+let ttsNextStart  = 0;       // Web Audio 스케줄 타임
+let ttsQueue      = [];      // 합성 대기 중인 문장 목록
+let isTTSBusy     = false;   // drainTTS 실행 중 여부
+let ttsJobSeq     = 0;       // 인터럽트 시퀀스 번호
+let ttsEsCurrent  = null;    // 현재 열린 TTS EventSource
+let ttsResolve    = null;    // 현재 대기 중인 Promise resolve
+let _activeSrcs   = [];      // 재생 중인 AudioBufferSourceNode 목록 (중단용)
 
 // 문장 누적
 let sentenceBuf = '';
@@ -578,18 +591,18 @@ function getAudioCtx() {
   return audioCtx;
 }
 
-function scheduleWav(arrayBuffer) {
+async function scheduleWav(arrayBuffer) {
   const ctx = getAudioCtx();
-  ctx.resume().then(() => {
-    ctx.decodeAudioData(arrayBuffer).then(buf => {
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      const start = Math.max(ttsNextStart, ctx.currentTime + 0.02);
-      src.start(start);
-      ttsNextStart = start + buf.duration;
-    }).catch(e => console.warn('decodeAudioData:', e));
-  });
+  await ctx.resume();
+  const buf = await ctx.decodeAudioData(arrayBuffer);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  const start = Math.max(ttsNextStart, ctx.currentTime + 0.02);
+  src.start(start);
+  ttsNextStart = start + buf.duration;
+  _activeSrcs.push(src);
+  src.onended = () => { _activeSrcs = _activeSrcs.filter(s => s !== src); };
 }
 
 
@@ -605,11 +618,10 @@ function stopTTS() {
   if (ttsEsCurrent) { ttsEsCurrent.close(); ttsEsCurrent = null; }
   // 대기 중인 Promise 해제 (드레인 루프 탈출)
   if (ttsResolve)   { ttsResolve(); ttsResolve = null; }
-  // 오디오 즉시 중단: AudioContext 재생성
-  if (audioCtx && audioCtx.state !== 'closed') {
-    audioCtx.close();
-    audioCtx = null;
-  }
+  // 재생 중인 소스 노드 즉시 중단 후 suspend (AudioContext는 재사용하여 autoplay unlock 유지)
+  for (const s of _activeSrcs) { try { s.stop(); } catch (_) {} }
+  _activeSrcs = [];
+  if (audioCtx && audioCtx.state !== 'closed') audioCtx.suspend();
   ttsNextStart = 0;
 }
 
@@ -656,18 +668,24 @@ async function drainTTS(mySeq) {
       ttsResolve = resolve;
       const es = new EventSource('/tts/stream/' + job_id);
       ttsEsCurrent = es;
+      let pending = 0;
+      let streamDone = false;
 
       function done() {
+        streamDone = true;
         if (ttsEsCurrent === es) ttsEsCurrent = null;
         if (ttsResolve === resolve) ttsResolve = null;
         es.close();
-        resolve();
+        if (pending === 0) resolve();
       }
 
-      es.addEventListener('audio', e => {
+      es.addEventListener('audio', async e => {
         if (ttsJobSeq !== mySeq) { done(); return; }
-        scheduleWav(base64ToArrayBuffer(e.data));
-        setStatus('speaking', '말하는 중...');
+        pending++;
+        try { await scheduleWav(base64ToArrayBuffer(e.data)); } catch (_) {}
+        pending--;
+        if (ttsJobSeq === mySeq) setStatus('speaking', '말하는 중...');
+        if (streamDone && pending === 0) resolve();
       });
       es.addEventListener('done',  done);
       es.addEventListener('error', done);
@@ -822,8 +840,17 @@ function connectSTT() {
     setTimeout(connectSTT, 3000);
   };
 
+  sttEs.addEventListener('speech_start', () => {
+    setStatus('listening', '듣는 중...');
+  });
+
   sttEs.addEventListener('partial', e => {
     document.getElementById('partialArea').textContent = e.data ? '⏳ ' + e.data : '';
+    // ASR hypothesis가 생성되는 즉시 TTS/LLM 인터럽트 (VAD 오탐 방지: 실제 인식 텍스트 확인 후 중단)
+    if (e.data) {
+      if (llmController) { llmController.abort(); llmController = null; }
+      stopTTS();
+    }
   });
 
   sttEs.addEventListener('commit', e => {
@@ -862,6 +889,9 @@ async function toggleMic() {
     btn.textContent = '🎤';
     if (!isTTSBusy) setStatus('', '대기 중');
   } else {
+    // await 전에 호출해야 user gesture context 안에서 AudioContext unlock이 보장됨
+    getAudioCtx();
+    audioCtx.resume().catch(() => {});
     if (!micStream) {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
@@ -925,6 +955,26 @@ async function pollStatus() {
 document.getElementById('loadingBanner').className = 'loading-banner show';
 pollStatus();
 connectSTT();
+</script>
+
+<script>
+// ── 중앙 오브 상태 연출 (비침습적 확장) ────────────────────────────────────────
+// 기존 로직이 갱신하는 #statusDot / #micBtn 의 class 를 관찰해
+// body[data-state], body[data-rec] 로 미러링한다. CSS 가 이 값으로 오브 색·링을 연출한다.
+(function () {
+  const dot = document.getElementById('statusDot');
+  const mic = document.getElementById('micBtn');
+  function sync() {
+    const s = dot.classList.contains('listening') ? 'listening'
+            : dot.classList.contains('thinking')  ? 'thinking'
+            : dot.classList.contains('speaking')  ? 'speaking' : 'idle';
+    document.body.dataset.state = s;
+    document.body.dataset.rec = mic.classList.contains('recording') ? '1' : '0';
+  }
+  new MutationObserver(sync).observe(dot, { attributes: true, attributeFilter: ['class'] });
+  new MutationObserver(sync).observe(mic, { attributes: true, attributeFilter: ['class'] });
+  sync();
+})();
 </script>
 </body>
 </html>

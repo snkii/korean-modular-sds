@@ -338,6 +338,7 @@ def transcribe():
                 _audio_chunks = list(_pre_buf) + [audio_np]
                 _last_text = ""
                 _in_speech = True
+                broadcast("", kind="speech_start")
             else:
                 _audio_chunks.append(audio_np)
             _silence_count = 0
